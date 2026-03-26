@@ -1,15 +1,13 @@
 #!/bin/bash
 
 # Bidirectional sync between internal/ and an external folder
-# Runs before every commit. Detects changes on both sides and:
-#   - If only external changed: copies external → project (auto-sync)
-#   - If only project changed: does nothing (post-commit handles project → external)
-#   - If both changed: attempts 3-way merge using HEAD as base
-#     - If merge succeeds: updates both sides
-#     - If merge has conflicts: aborts commit, shows conflicted files
+# Runs before every commit. Syncs all regular files (see exclusions below).
+# Text files (no NUL in first 8KB): 3-way merge with git merge-file when both sides changed.
+# Binary files: conflict → abort; human picks a side.
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 EXTERNAL_DIR="${SECOND_BRAIN_DIR:-}"
+# Keep these exclusions in sync with hooks/post-commit
 # ───────────────────────────────────────────────────────────────────────────────
 
 if [ -z "$EXTERNAL_DIR" ]; then
@@ -25,36 +23,56 @@ if [ ! -d "$EXTERNAL_DIR" ] || [ ! -d "$INTERNAL_DIR" ]; then
     exit 0
 fi
 
+_ext_resolved="$(cd "$EXTERNAL_DIR" && pwd)" || exit 0
+_home_resolved="$(cd "$HOME" && pwd)" || exit 0
+if [[ "$_ext_resolved" == "/" ]] || [[ "$_ext_resolved" == "$_home_resolved" ]]; then
+    echo "⚠ pre-commit: SECOND_BRAIN_DIR must not be / or your home directory. Skipping sync." >&2
+    exit 0
+fi
+unset _ext_resolved _home_resolved
+
 HAS_CONFLICTS=0
 SYNCED_FILES=()
 CONFLICTED_FILES=()
 
+# Paths under dir as ./relative/path (same as find .)
+collect_sync_paths() {
+    local dir="$1"
+    (cd "$dir" && find . -type f \
+        ! -path '*/.obsidian/*' \
+        ! -path '*/.trash/*' \
+        ! -name '.DS_Store' \
+        ! -name '*.tmp' 2>/dev/null)
+}
+
+# Binary if NUL appears in first 8000 bytes (Git-style heuristic). Exit 0 = binary.
+is_probably_binary() {
+    local f="$1"
+    [ ! -f "$f" ] && return 0
+    head -c 8000 "$f" 2>/dev/null | LC_ALL=C grep -q $'\0'
+}
+
 # Detect OS for correct md5 command
 if command -v md5sum &>/dev/null; then
     md5cmd() { md5sum "$1" | cut -d' ' -f1; }
-    md5pipe() { md5sum | cut -d' ' -f1; }
 elif command -v md5 &>/dev/null; then
     md5cmd() { md5 -q "$1"; }
-    md5pipe() { md5; }
 else
     echo "⚠ pre-commit: No md5 command found. Skipping sync." >&2
     exit 0
 fi
 
-# Find all markdown files across both sides
-ALL_FILES=$(cd "$INTERNAL_DIR" && find . -name "*.md" -type f; cd "$EXTERNAL_DIR" && find . -name "*.md" -type f)
+ALL_FILES=$(collect_sync_paths "$INTERNAL_DIR"; collect_sync_paths "$EXTERNAL_DIR")
 ALL_FILES=$(echo "$ALL_FILES" | sort -u)
 
 while IFS= read -r file; do
     [ -z "$file" ] && continue
 
-    # Strip leading ./
     file="${file#./}"
 
     project_file="$INTERNAL_DIR/$file"
     external_file="$EXTERNAL_DIR/$file"
 
-    # Get hashes (empty string if file doesn't exist)
     project_hash=""
     external_hash=""
     head_hash=""
@@ -62,16 +80,15 @@ while IFS= read -r file; do
     [ -f "$project_file" ] && project_hash=$(md5cmd "$project_file")
     [ -f "$external_file" ] && external_hash=$(md5cmd "$external_file")
 
-    # Get HEAD version hash
-    head_content=$(git show "HEAD:internal/$file" 2>/dev/null)
-    if [ $? -eq 0 ]; then
-        head_hash=$(echo "$head_content" | md5pipe)
+    head_hash=""
+    head_tmp=$(mktemp)
+    if git show "HEAD:internal/$file" > "$head_tmp" 2>/dev/null; then
+        head_hash=$(md5cmd "$head_tmp")
     fi
+    rm -f "$head_tmp"
 
-    # If project and external are the same, nothing to do
     [ "$project_hash" = "$external_hash" ] && continue
 
-    # If file doesn't exist in HEAD (never committed), we can't 3-way merge.
     if [ -z "$head_hash" ]; then
         if [ -f "$project_file" ] && [ ! -f "$external_file" ]; then
             continue
@@ -81,13 +98,15 @@ while IFS= read -r file; do
             git add "$project_file"
             SYNCED_FILES+=("$file (external → project, new file)")
             continue
+        elif [ ! -f "$project_file" ] && [ ! -f "$external_file" ]; then
+            continue
         else
-            echo "⚠ Both sides have different versions of $file (no base to merge). Keeping project version." >&2
+            CONFLICTED_FILES+=("$file (no committed base — internal and external differ; pick one, stage, commit)")
+            HAS_CONFLICTS=1
             continue
         fi
     fi
 
-    # Determine what changed relative to HEAD
     project_changed=false
     external_changed=false
 
@@ -98,7 +117,6 @@ while IFS= read -r file; do
         external_changed=true
     fi
 
-    # Case 1: Only external changed → copy to project
     if [ "$external_changed" = true ] && [ "$project_changed" = false ]; then
         if [ -f "$external_file" ]; then
             mkdir -p "$(dirname "$project_file")"
@@ -115,12 +133,10 @@ while IFS= read -r file; do
         continue
     fi
 
-    # Case 2: Only project changed → nothing to do (post-commit handles it)
     if [ "$project_changed" = true ] && [ "$external_changed" = false ]; then
         continue
     fi
 
-    # Case 3: Both changed → attempt 3-way merge
     if [ "$project_changed" = true ] && [ "$external_changed" = true ]; then
         if [ ! -f "$project_file" ] || [ ! -f "$external_file" ]; then
             CONFLICTED_FILES+=("$file (one side deleted, other side modified)")
@@ -128,10 +144,14 @@ while IFS= read -r file; do
             continue
         fi
 
-        base_tmp=$(mktemp)
-        git show "HEAD:internal/$file" > "$base_tmp" 2>/dev/null
+        if is_probably_binary "$project_file" || is_probably_binary "$external_file"; then
+            CONFLICTED_FILES+=("$file (binary — both sides changed; copy one version over the other, then commit)")
+            HAS_CONFLICTS=1
+            continue
+        fi
 
-        if [ $? -ne 0 ]; then
+        base_tmp=$(mktemp)
+        if ! git show "HEAD:internal/$file" > "$base_tmp" 2>/dev/null; then
             rm -f "$base_tmp"
             CONFLICTED_FILES+=("$file (new on both sides)")
             HAS_CONFLICTS=1
@@ -159,7 +179,6 @@ while IFS= read -r file; do
 
 done <<< "$ALL_FILES"
 
-# Report synced files
 if [ ${#SYNCED_FILES[@]} -gt 0 ]; then
     echo "✔ Pre-commit sync:"
     for f in "${SYNCED_FILES[@]}"; do
@@ -167,16 +186,15 @@ if [ ${#SYNCED_FILES[@]} -gt 0 ]; then
     done
 fi
 
-# If conflicts, abort
 if [ $HAS_CONFLICTS -eq 1 ]; then
     echo "" >&2
-    echo "⚠ Commit aborted — merge conflicts detected:" >&2
+    echo "⚠ Commit aborted — conflicts detected:" >&2
     for f in "${CONFLICTED_FILES[@]}"; do
         echo "  ✗ $f" >&2
     done
     echo "" >&2
-    echo "Resolve the conflicts in the project files, then commit again." >&2
-    echo "Conflict markers (<<<<<<< / ======= / >>>>>>>) are in the files." >&2
+    echo "Resolve: for text files with conflict markers, edit then commit again." >&2
+    echo "For binary files or \"no base\", choose internal or external, stage, commit." >&2
     exit 1
 fi
 

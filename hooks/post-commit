@@ -1,10 +1,11 @@
 #!/bin/bash
 
-# Sync internal/ to an external folder after every commit
-# Only syncs if internal/ was part of the committed changes
+# Sync internal/ → external after commits that touch internal/
+# Mirrors the same file set as pre-commit (see exclusions — keep in sync with pre-commit).
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 EXTERNAL_DIR="${SECOND_BRAIN_DIR:-}"
+# Exclusions must match hooks/pre-commit collect_sync_paths
 # ───────────────────────────────────────────────────────────────────────────────
 
 if [ -z "$EXTERNAL_DIR" ]; then
@@ -13,22 +14,80 @@ fi
 
 INTERNAL_DIR="$(git rev-parse --show-toplevel)/internal"
 
-if git diff-tree --no-commit-id --name-only -r HEAD | grep -q '^internal/'; then
-    if [ ! -d "$EXTERNAL_DIR" ]; then
-        echo "⚠ post-commit: External directory not found: $EXTERNAL_DIR" >&2
-        echo "  Skipping sync. Check if the folder was renamed or moved." >&2
-        exit 0
+if ! git diff-tree --no-commit-id --name-only -r HEAD | grep -q '^internal/'; then
+    exit 0
+fi
+
+if [ ! -d "$EXTERNAL_DIR" ]; then
+    echo "⚠ post-commit: External directory not found: $EXTERNAL_DIR" >&2
+    echo "  Skipping sync. Check if the folder was renamed or moved." >&2
+    exit 0
+fi
+
+if [ ! -d "$INTERNAL_DIR" ]; then
+    exit 0
+fi
+
+_ext_resolved="$(cd "$EXTERNAL_DIR" && pwd)" || exit 0
+_home_resolved="$(cd "$HOME" && pwd)" || exit 0
+if [[ "$_ext_resolved" == "/" ]]; then
+    echo "⚠ post-commit: SECOND_BRAIN_DIR must not be filesystem root. Skipping sync." >&2
+    exit 0
+fi
+if [[ "$_ext_resolved" == "$_home_resolved" ]]; then
+    echo "⚠ post-commit: SECOND_BRAIN_DIR must not be your home directory. Skipping sync." >&2
+    exit 0
+fi
+unset _ext_resolved _home_resolved
+
+RSYNC_EXCLUDES=(
+    --exclude='.obsidian/'
+    --exclude='.trash/'
+    --exclude='.DS_Store'
+    --exclude='*.tmp'
+)
+
+sync_internal_to_external() {
+    if command -v rsync &>/dev/null; then
+        rsync -a --delete "${RSYNC_EXCLUDES[@]}" "${INTERNAL_DIR}/" "${EXTERNAL_DIR}/"
+        return $?
     fi
 
-    if ! rm -rf "$EXTERNAL_DIR"/*; then
-        echo "⚠ post-commit: Failed to clean external directory" >&2
-        exit 0
-    fi
+    local f rel dest
+    while IFS= read -r -d '' f; do
+        rel="${f#"$INTERNAL_DIR"/}"
+        dest="$EXTERNAL_DIR/$rel"
+        mkdir -p "$(dirname "$dest")"
+        cp -a "$f" "$dest"
+    done < <(
+        find "$INTERNAL_DIR" -type f \
+            ! -path '*/.obsidian/*' \
+            ! -path '*/.trash/*' \
+            ! -name '.DS_Store' \
+            ! -name '*.tmp' \
+            -print0 2>/dev/null
+    )
 
-    if cp -a "$INTERNAL_DIR"/* "$EXTERNAL_DIR"/; then
-        echo "✔ Synced internal/ → external folder"
-    else
-        echo "⚠ post-commit: Failed to copy files to external directory" >&2
-        exit 0
-    fi
+    while IFS= read -r -d '' f; do
+        rel="${f#"$EXTERNAL_DIR"/}"
+        int="$INTERNAL_DIR/$rel"
+        if [[ ! -f "$int" ]]; then
+            rm -f "$f"
+        fi
+    done < <(
+        find "$EXTERNAL_DIR" -type f \
+            ! -path '*/.obsidian/*' \
+            ! -path '*/.trash/*' \
+            ! -name '.DS_Store' \
+            ! -name '*.tmp' \
+            -print0 2>/dev/null
+    )
+
+    return 0
+}
+
+if sync_internal_to_external; then
+    echo "✔ Synced internal/ → external folder"
+else
+    exit 0
 fi

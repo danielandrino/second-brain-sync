@@ -27,19 +27,34 @@ The AI agent opens your project, reads `AGENTS.md`, finds `internal/INDEX.md`, a
 
 ## How the sync works
 
-Two git hooks handle everything:
+Two git hooks handle everything. They sync **all regular files** under `internal/` and your external folder, **except** ignored paths (see below).
 
 **Pre-commit** — runs before every commit:
-- Compares each file in `internal/` with its copy in your second brain
+
+- Compares each synced file in `internal/` with its copy in your second brain
 - If only the external copy changed → pulls it into the project automatically
-- If only the project copy changed → does nothing (post-commit handles it)
-- If both changed on different lines → 3-way merge using `git merge-file`, resolves automatically
-- If both changed on the same lines → aborts the commit with conflict markers for you to resolve
+- If only the project copy changed → does nothing (post-commit handles project → external)
+- If both changed and the file is **text** (no NUL byte in the first 8KB, same idea as Git’s binary detection) → 3-way merge with `git merge-file` when possible
+- If both changed and the file is **binary** → commit is **aborted**; you copy one version over the other, stage, and commit again
+- If both changed on the same lines (text) → commit aborted with conflict markers in the file
+- If there is **no committed base** (e.g. never committed, or gitignored) and internal and external **both** differ → commit is **aborted** until you pick a side
 
 **Post-commit** — runs after every commit:
-- If any file in `internal/` was part of the commit, copies `internal/` → external folder
 
-The last committed version (HEAD) is always the merge base. No snapshots, no databases, no daemons.
+- If any path under `internal/` was part of the commit, mirrors `internal/` → external folder (`rsync` when available), **respecting the same exclusions** as pre-commit
+
+The last committed version (HEAD) is always the merge base for files that exist in Git history. No snapshots, no databases, no daemons.
+
+### Excluded paths (both hooks)
+
+These are skipped and not deleted by post-commit’s mirror:
+
+- `.obsidian/` (Obsidian config)
+- `.trash/`
+- `.DS_Store`
+- `*.tmp`
+
+Edit the `find` / `rsync` exclusions in **both** [hooks/pre-commit](hooks/pre-commit) and [hooks/post-commit](hooks/post-commit) together if you change them.
 
 ## Install
 
@@ -128,24 +143,30 @@ The AI reads INDEX.md and knows exactly which file to open — no guessing, no s
 |----------|-------------|
 | Only external changed | Auto-synced to project, staged for commit |
 | Only project changed | Post-commit copies to external |
-| Both changed, different lines | 3-way merge resolves automatically |
-| Both changed, same lines | Commit aborted, conflict markers in file |
+| Both changed (text), mergeable | 3-way merge; if clean, staged |
+| Both changed (text), conflict | Commit aborted; conflict markers in file |
+| Both changed (binary) | Commit aborted; choose one file manually |
+| No HEAD base, internal and external differ | Commit aborted; pick one side, stage, commit |
 | File deleted externally | Deleted in project, staged |
-| File deleted in project | Post-commit removes from external |
+| File deleted in project | Post-commit removes it from external (if mirrored) |
 | New file in external only | Copied to project, staged |
-| External folder missing | Hooks skip silently |
+| External folder missing | Hooks skip silently (pre-commit warns if `SECOND_BRAIN_DIR` unset) |
 
 ## Requirements
 
 - Git
 - Bash
 - `md5` (macOS) or `md5sum` (Linux)
+- `rsync` (recommended for post-commit; without it, a `find`/`cp` fallback runs)
 
 ## Limitations
 
-- Only syncs `*.md` files. Edit the `find` command in the hooks to change this.
+- **Text vs binary** is inferred (NUL in the first 8KB ⇒ binary). UTF-16 and unusual encodings may be misclassified.
+- **Merge** does not validate languages (e.g. merged JS may be invalid syntax); you fix that after resolving conflicts.
+- Files under `internal/` that are **gitignored** have no `HEAD` version; if internal and external both differ, the hook **aborts** instead of guessing.
 - The `internal/` folder name is hardcoded. Edit the hooks if you use a different name.
 - Hooks run on commit, not in real-time. Edits in your second brain are synced when you next commit.
+- Point `SECOND_BRAIN_DIR` at a **dedicated** folder — never `/` or your home directory (hooks refuse those paths). Keep backups; cloud sync and partial failures can still cause surprises.
 
 ## License
 
