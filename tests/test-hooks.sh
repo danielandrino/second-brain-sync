@@ -42,6 +42,19 @@ assert_contains() {
     fi
 }
 
+assert_file_eq() {
+    local expected_file="$1"
+    local actual_file="$2"
+    local message="$3"
+
+    if ! cmp -s "$expected_file" "$actual_file"; then
+        echo "Files differ:" >&2
+        echo "expected: $expected_file" >&2
+        echo "actual:   $actual_file" >&2
+        fail "$message"
+    fi
+}
+
 new_repo() {
     local name="$1"
     local dir="$TMPDIR_ROOT/$name"
@@ -70,6 +83,17 @@ run_pre_commit() {
     PRE_COMMIT_EXIT=$?
     set -e
     PRE_COMMIT_OUTPUT="$(cat "$output_file")"
+}
+
+run_commit() {
+    local repo="$1"
+    local message="$2"
+
+    (
+        cd "$repo"
+        export SECOND_BRAIN_DIR="$repo/external"
+        git commit -q -m "$message"
+    )
 }
 
 run_test() {
@@ -174,16 +198,76 @@ test_post_commit_syncs_root_commit() {
     repo="$(new_repo root_sync)"
 
     printf 'first\n' >"$repo/internal/doc.txt"
-    (
-        cd "$repo"
-        export SECOND_BRAIN_DIR="$repo/external"
-        git add internal/doc.txt
-        git commit -q -m "root"
-    )
+    git -C "$repo" add internal/doc.txt
+    run_commit "$repo" "root"
 
     local mirrored
     mirrored="$(cat "$repo/external/doc.txt")"
     assert_eq "first" "$mirrored" "post-commit should mirror files on the initial commit"
+}
+
+test_pre_commit_aborts_on_binary_conflict() {
+    local repo
+    repo="$(new_repo binary_conflict)"
+
+    printf 'A\0B\0C' >"$repo/internal/blob.bin"
+    cp "$repo/internal/blob.bin" "$repo/external/blob.bin"
+    git -C "$repo" add internal/blob.bin
+    SECOND_BRAIN_DIR="$repo/external" git -C "$repo" commit -q -m "base"
+
+    printf 'A\0I\0C' >"$repo/internal/blob.bin"
+    git -C "$repo" add internal/blob.bin
+    printf 'A\0E\0C' >"$repo/external/blob.bin"
+
+    run_pre_commit "$repo"
+    assert_eq "1" "$PRE_COMMIT_EXIT" "pre-commit should abort when both binary copies changed"
+    assert_contains "$PRE_COMMIT_OUTPUT" "binary — both sides changed" "pre-commit should report binary conflict"
+
+    local staged_tmp expected_tmp
+    staged_tmp="$(mktemp "$TMPDIR_ROOT/staged-binary.XXXXXX")"
+    expected_tmp="$(mktemp "$TMPDIR_ROOT/expected-binary.XXXXXX")"
+    git -C "$repo" show :internal/blob.bin >"$staged_tmp"
+    printf 'A\0I\0C' >"$expected_tmp"
+    assert_file_eq "$expected_tmp" "$staged_tmp" "pre-commit must preserve the staged binary blob on conflict"
+}
+
+test_pre_commit_syncs_external_binary_change() {
+    local repo
+    repo="$(new_repo binary_external_sync)"
+
+    printf 'A\0B\0C' >"$repo/internal/blob.bin"
+    cp "$repo/internal/blob.bin" "$repo/external/blob.bin"
+    git -C "$repo" add internal/blob.bin
+    SECOND_BRAIN_DIR="$repo/external" git -C "$repo" commit -q -m "base"
+
+    printf 'Z\0Y\0X' >"$repo/external/blob.bin"
+
+    run_pre_commit "$repo"
+    assert_eq "0" "$PRE_COMMIT_EXIT" "pre-commit should sync external-only binary changes"
+
+    local staged_tmp expected_tmp
+    staged_tmp="$(mktemp "$TMPDIR_ROOT/staged-sync-binary.XXXXXX")"
+    expected_tmp="$(mktemp "$TMPDIR_ROOT/expected-sync-binary.XXXXXX")"
+    git -C "$repo" show :internal/blob.bin >"$staged_tmp"
+    printf 'Z\0Y\0X' >"$expected_tmp"
+    assert_file_eq "$expected_tmp" "$staged_tmp" "external binary change should be staged into internal/"
+}
+
+test_pre_commit_syncs_new_external_binary_file() {
+    local repo
+    repo="$(new_repo binary_new_external)"
+
+    printf 'A\0B\0C' >"$repo/external/new.bin"
+
+    run_pre_commit "$repo"
+    assert_eq "0" "$PRE_COMMIT_EXIT" "pre-commit should import a new binary file from external"
+
+    local staged_tmp expected_tmp
+    staged_tmp="$(mktemp "$TMPDIR_ROOT/staged-new-binary.XXXXXX")"
+    expected_tmp="$(mktemp "$TMPDIR_ROOT/expected-new-binary.XXXXXX")"
+    git -C "$repo" show :internal/new.bin >"$staged_tmp"
+    printf 'A\0B\0C' >"$expected_tmp"
+    assert_file_eq "$expected_tmp" "$staged_tmp" "new external binary file should be staged into internal/"
 }
 
 test_pre_commit_treats_plain_text_as_text() {
@@ -220,12 +304,33 @@ EOF
     assert_contains "$PRE_COMMIT_OUTPUT" "auto-merged" "plain text divergence should use the text merge path"
 }
 
+test_post_commit_deletes_removed_internal_file_from_external() {
+    local repo
+    repo="$(new_repo post_commit_delete)"
+
+    printf 'gone\n' >"$repo/internal/doc.txt"
+    git -C "$repo" add internal/doc.txt
+    run_commit "$repo" "add doc"
+
+    rm "$repo/internal/doc.txt"
+    git -C "$repo" add internal/doc.txt
+    run_commit "$repo" "delete doc"
+
+    if [[ -e "$repo/external/doc.txt" ]]; then
+        fail "post-commit should delete mirrored files removed from internal/"
+    fi
+}
+
 main() {
     run_test test_pre_commit_merges_non_overlapping_text_changes
     run_test test_pre_commit_rejects_unstaged_internal_changes
     run_test test_pre_commit_syncs_external_change_into_index
     run_test test_post_commit_syncs_root_commit
+    run_test test_pre_commit_aborts_on_binary_conflict
+    run_test test_pre_commit_syncs_external_binary_change
+    run_test test_pre_commit_syncs_new_external_binary_file
     run_test test_pre_commit_treats_plain_text_as_text
+    run_test test_post_commit_deletes_removed_internal_file_from_external
     echo "PASS: $TESTS_RUN tests"
 }
 

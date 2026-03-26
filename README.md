@@ -37,6 +37,7 @@ Two git hooks handle everything. They sync **all regular files** under `internal
 - If both changed and the file is **text** (no NUL byte in the first 8KB, same idea as Git’s binary detection) → 3-way merge with `git merge-file` when possible
 - If both changed and the file is **binary** → commit is **aborted**; you copy one version over the other, stage, and commit again
 - If both changed on the same lines (text) → commit aborted with conflict markers in the file
+- If syncing or merging would overwrite **unstaged** changes in `internal/` → commit is **aborted**; stage or stash those changes first
 - If there is **no committed base** (e.g. never committed, or gitignored) and internal and external **both** differ → commit is **aborted** until you pick a side
 
 **Post-commit** — runs after every commit:
@@ -146,6 +147,7 @@ The AI reads INDEX.md and knows exactly which file to open — no guessing, no s
 | Both changed (text), mergeable | 3-way merge; if clean, staged |
 | Both changed (text), conflict | Commit aborted; conflict markers in file |
 | Both changed (binary) | Commit aborted; choose one file manually |
+| Unstaged local changes would be overwritten | Commit aborted; stage or stash first |
 | No HEAD base, internal and external differ | Commit aborted; pick one side, stage, commit |
 | File deleted externally | Deleted in project, staged |
 | File deleted in project | Post-commit removes it from external (if mirrored) |
@@ -159,10 +161,21 @@ The AI reads INDEX.md and knows exactly which file to open — no guessing, no s
 - `md5` (macOS) or `md5sum` (Linux)
 - `rsync` (recommended for post-commit; without it, a `find`/`cp` fallback runs)
 
+## Tests
+
+Run the integration suite with:
+
+```bash
+bash tests/test-hooks.sh
+```
+
+It exercises real temporary Git repositories and covers text merges, binary sync/conflicts, root-commit mirroring, protection against unstaged local changes, and post-commit deletion mirroring.
+
 ## Limitations
 
 - **Text vs binary** is inferred (NUL in the first 8KB ⇒ binary). UTF-16 and unusual encodings may be misclassified.
 - **Merge** does not validate languages (e.g. merged JS may be invalid syntax); you fix that after resolving conflicts.
+- The pre-commit hook works from the **staged** version of files in `internal/`. If your worktree has extra unstaged edits that would be overwritten by sync, the hook aborts instead of guessing.
 - Files under `internal/` that are **gitignored** have no `HEAD` version; if internal and external both differ, the hook **aborts** instead of guessing.
 - The `internal/` folder name is hardcoded. Edit the hooks if you use a different name.
 - Hooks run on commit, not in real-time. Edits in your second brain are synced when you next commit.
