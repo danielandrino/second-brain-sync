@@ -25,38 +25,6 @@ your-project/
 
 The AI agent opens your project, reads `AGENTS.md`, finds `internal/INDEX.md`, and knows exactly which doc to read for context. No extra prompting.
 
-## How the sync works
-
-Two git hooks handle everything. They sync **all regular files** under `internal/` and your external folder, **except** ignored paths (see below).
-
-**Pre-commit** — runs before every commit:
-
-- Compares each synced file in `internal/` with its copy in your second brain
-- If only the external copy changed → pulls it into the project automatically
-- If only the project copy changed → does nothing (post-commit handles project → external)
-- If both changed and the file is **text** (no NUL byte in the first 8KB, same idea as Git’s binary detection) → 3-way merge with `git merge-file` when possible
-- If both changed and the file is **binary** → commit is **aborted**; you copy one version over the other, stage, and commit again
-- If both changed on the same lines (text) → commit aborted with conflict markers in the file
-- If syncing or merging would overwrite **unstaged** changes in `internal/` → commit is **aborted**; stage or stash those changes first
-- If there is **no committed base** (e.g. never committed, or gitignored) and internal and external **both** differ → commit is **aborted** until you pick a side
-
-**Post-commit** — runs after every commit:
-
-- If any path under `internal/` was part of the commit, mirrors `internal/` → external folder (`rsync` when available), **respecting the same exclusions** as pre-commit
-
-The last committed version (HEAD) is always the merge base for files that exist in Git history. No snapshots, no databases, no daemons.
-
-### Excluded paths (both hooks)
-
-These are skipped and not deleted by post-commit’s mirror:
-
-- `.obsidian/` (Obsidian config)
-- `.trash/`
-- `.DS_Store`
-- `*.tmp`
-
-Edit the `find` / `rsync` exclusions in **both** [hooks/pre-commit](hooks/pre-commit) and [hooks/post-commit](hooks/post-commit) together if you change them.
-
 ## Install
 
 The easiest way: point your AI coding agent at this repo and ask it to set it up.
@@ -102,6 +70,38 @@ export SECOND_BRAIN_DIR="$HOME/Documents/ObsidianVault/Projects/MyProject"
 # Any synced folder (Dropbox, Google Drive, etc.)
 export SECOND_BRAIN_DIR="$HOME/Dropbox/notes/my-project"
 ```
+
+## How the sync works
+
+Two git hooks handle everything. They sync **all regular files** under `internal/` and your external folder, **except** ignored paths (see below).
+
+**Pre-commit** — runs before every commit:
+
+- Compares each synced file in `internal/` with its copy in your second brain
+- If only the external copy changed → pulls it into the project automatically
+- If only the project copy changed → does nothing (post-commit handles project → external)
+- If both changed and the file is **text** (no NUL byte in the first 8KB, same idea as Git’s binary detection) → 3-way merge with `git merge-file` when possible
+- If both changed and the file is **binary** → commit is **aborted**; you copy one version over the other, stage, and commit again
+- If both changed on the same lines (text) → commit aborted with conflict markers in the file
+- If syncing or merging would overwrite **unstaged** changes in `internal/` → commit is **aborted**; stage or stash those changes first
+- If there is **no committed base** (e.g. never committed, or gitignored) and internal and external **both** differ → commit is **aborted** until you pick a side
+
+**Post-commit** — runs after every commit:
+
+- If any path under `internal/` was part of the commit, mirrors `internal/` → external folder (`rsync` when available), **respecting the same exclusions** as pre-commit
+
+The last committed version (HEAD) is always the merge base for files that exist in Git history. No snapshots, no databases, no daemons.
+
+### Excluded paths (both hooks)
+
+These are skipped and not deleted by post-commit’s mirror:
+
+- `.obsidian/` (Obsidian config)
+- `.trash/`
+- `.DS_Store`
+- `*.tmp`
+
+Edit the `find` / `rsync` exclusions in **both** [hooks/pre-commit](hooks/pre-commit) and [hooks/post-commit](hooks/post-commit) together if you change them.
 
 ## The AGENTS.md + INDEX.md pattern
 
@@ -184,3 +184,7 @@ It exercises real temporary Git repositories and covers text merges, binary sync
 ## License
 
 MIT
+
+## Author
+
+Built by [Daniel Andrino](https://github.com/danielandrino). You can also find me on [X](https://x.com/andrino_daniel).
