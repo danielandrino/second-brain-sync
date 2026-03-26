@@ -49,7 +49,23 @@ collect_sync_paths() {
 is_probably_binary() {
     local f="$1"
     [ ! -f "$f" ] && return 0
-    head -c 8000 "$f" 2>/dev/null | LC_ALL=C grep -q $'\0'
+    od -An -tx1 -N 8000 "$f" 2>/dev/null | LC_ALL=C grep -Eq '(^|[[:space:]])00([[:space:]]|$)'
+}
+
+# Return 0 when the worktree has local changes not staged for commit at this path.
+has_unstaged_worktree_changes() {
+    local rel="$1"
+    local git_path="internal/$rel"
+
+    if ! git diff --quiet -- "$git_path" 2>/dev/null; then
+        return 0
+    fi
+
+    if git ls-files --others --exclude-standard -- "$git_path" | grep -q .; then
+        return 0
+    fi
+
+    return 1
 }
 
 # Detect OS for correct md5 command
@@ -73,11 +89,16 @@ while IFS= read -r file; do
     project_file="$INTERNAL_DIR/$file"
     external_file="$EXTERNAL_DIR/$file"
 
-    project_hash=""
+    index_hash=""
     external_hash=""
     head_hash=""
 
-    [ -f "$project_file" ] && project_hash=$(md5cmd "$project_file")
+    index_tmp=$(mktemp)
+    if git show ":internal/$file" > "$index_tmp" 2>/dev/null; then
+        index_hash=$(md5cmd "$index_tmp")
+    fi
+    rm -f "$index_tmp"
+
     [ -f "$external_file" ] && external_hash=$(md5cmd "$external_file")
 
     head_hash=""
@@ -87,18 +108,23 @@ while IFS= read -r file; do
     fi
     rm -f "$head_tmp"
 
-    [ "$project_hash" = "$external_hash" ] && continue
+    [ "$index_hash" = "$external_hash" ] && continue
 
     if [ -z "$head_hash" ]; then
-        if [ -f "$project_file" ] && [ ! -f "$external_file" ]; then
+        if [ -n "$index_hash" ] && [ ! -f "$external_file" ]; then
             continue
-        elif [ ! -f "$project_file" ] && [ -f "$external_file" ]; then
+        elif [ -z "$index_hash" ] && [ -f "$external_file" ]; then
+            if has_unstaged_worktree_changes "$file"; then
+                CONFLICTED_FILES+=("$file (external would overwrite unstaged local changes)")
+                HAS_CONFLICTS=1
+                continue
+            fi
             mkdir -p "$(dirname "$project_file")"
             cp "$external_file" "$project_file"
             git add "$project_file"
             SYNCED_FILES+=("$file (external → project, new file)")
             continue
-        elif [ ! -f "$project_file" ] && [ ! -f "$external_file" ]; then
+        elif [ -z "$index_hash" ] && [ ! -f "$external_file" ]; then
             continue
         else
             CONFLICTED_FILES+=("$file (no committed base — internal and external differ; pick one, stage, commit)")
@@ -110,7 +136,7 @@ while IFS= read -r file; do
     project_changed=false
     external_changed=false
 
-    if [ "$project_hash" != "$head_hash" ]; then
+    if [ "$index_hash" != "$head_hash" ]; then
         project_changed=true
     fi
     if [ "$external_hash" != "$head_hash" ]; then
@@ -118,6 +144,12 @@ while IFS= read -r file; do
     fi
 
     if [ "$external_changed" = true ] && [ "$project_changed" = false ]; then
+        if has_unstaged_worktree_changes "$file"; then
+            CONFLICTED_FILES+=("$file (external would overwrite unstaged local changes)")
+            HAS_CONFLICTS=1
+            continue
+        fi
+
         if [ -f "$external_file" ]; then
             mkdir -p "$(dirname "$project_file")"
             cp "$external_file" "$project_file"
@@ -138,7 +170,13 @@ while IFS= read -r file; do
     fi
 
     if [ "$project_changed" = true ] && [ "$external_changed" = true ]; then
-        if [ ! -f "$project_file" ] || [ ! -f "$external_file" ]; then
+        if has_unstaged_worktree_changes "$file"; then
+            CONFLICTED_FILES+=("$file (cannot merge while internal/ has unstaged local changes)")
+            HAS_CONFLICTS=1
+            continue
+        fi
+
+        if [ -z "$index_hash" ] || [ ! -f "$external_file" ]; then
             CONFLICTED_FILES+=("$file (one side deleted, other side modified)")
             HAS_CONFLICTS=1
             continue
@@ -159,7 +197,12 @@ while IFS= read -r file; do
         fi
 
         project_tmp=$(mktemp)
-        cp "$project_file" "$project_tmp"
+        if ! git show ":internal/$file" > "$project_tmp" 2>/dev/null; then
+            rm -f "$base_tmp" "$project_tmp"
+            CONFLICTED_FILES+=("$file (failed to read staged version from index)")
+            HAS_CONFLICTS=1
+            continue
+        fi
 
         git merge-file "$project_tmp" "$base_tmp" "$external_file"
         merge_result=$?

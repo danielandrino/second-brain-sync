@@ -14,7 +14,7 @@ fi
 
 INTERNAL_DIR="$(git rev-parse --show-toplevel)/internal"
 
-if ! git diff-tree --no-commit-id --name-only -r HEAD | grep -q '^internal/'; then
+if ! git diff-tree --root --no-commit-id --name-only -r HEAD | grep -q '^internal/'; then
     exit 0
 fi
 
