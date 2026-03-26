@@ -43,38 +43,47 @@ The last committed version (HEAD) is always the merge base. No snapshots, no dat
 
 ## Install
 
+The easiest way: point your AI coding agent at this repo and ask it to set it up.
+
+> Install second-brain-sync from https://github.com/danielandrino/second-brain-sync in my project. My external docs folder is /path/to/my/folder.
+
+The AI will copy the hooks, set the path, and make them executable.
+
+### Manual install
+
+1. Copy the hooks into your project:
+
 ```bash
-git clone https://github.com/danielandrino/second-brain-sync.git
-cd second-brain-sync
-./install.sh /path/to/your/project
+cp hooks/pre-commit /path/to/your/project/.git/hooks/pre-commit
+cp hooks/post-commit /path/to/your/project/.git/hooks/post-commit
 ```
 
-Then set the `SECOND_BRAIN_DIR` environment variable to your external folder:
+2. Make them executable:
 
 ```bash
-# In ~/.zshrc or ~/.bashrc
-export SECOND_BRAIN_DIR="/path/to/your/obsidian/vault/ProjectDocs"
+chmod +x /path/to/your/project/.git/hooks/pre-commit
+chmod +x /path/to/your/project/.git/hooks/post-commit
 ```
 
-Or hardcode the path directly in `.git/hooks/pre-commit` and `.git/hooks/post-commit` (replace the `EXTERNAL_DIR` line).
-
-## Examples
-
-### Obsidian (iCloud)
+3. Set the path to your external folder (pick one):
 
 ```bash
+# Option A: environment variable (in ~/.zshrc or ~/.bashrc)
+export SECOND_BRAIN_DIR="/path/to/your/external/folder"
+
+# Option B: hardcode the path directly in both hook files (replace the EXTERNAL_DIR line)
+```
+
+### Examples
+
+```bash
+# Obsidian (iCloud)
 export SECOND_BRAIN_DIR="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/MyVault/Projects/MyProject"
-```
 
-### Obsidian (local vault)
-
-```bash
+# Obsidian (local vault)
 export SECOND_BRAIN_DIR="$HOME/Documents/ObsidianVault/Projects/MyProject"
-```
 
-### Any folder
-
-```bash
+# Any synced folder (Dropbox, Google Drive, etc.)
 export SECOND_BRAIN_DIR="$HOME/Dropbox/notes/my-project"
 ```
 
@@ -82,7 +91,7 @@ export SECOND_BRAIN_DIR="$HOME/Dropbox/notes/my-project"
 
 For AI agents to find your docs, add two files:
 
-**AGENTS.md** (project root) — a universal standard supported by Claude Code, Cursor, Codex, Copilot, and 20+ tools:
+**AGENTS.md** (project root) — a universal standard supported by Claude Code, Cursor, Codex, Copilot, and many other tools:
 
 ```markdown
 # My Project
