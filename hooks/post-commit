@@ -1,0 +1,34 @@
+#!/bin/bash
+
+# Sync internal/ to an external folder after every commit
+# Only syncs if internal/ was part of the committed changes
+
+# ── Configuration ──────────────────────────────────────────────────────────────
+EXTERNAL_DIR="${SECOND_BRAIN_DIR:-}"
+# ───────────────────────────────────────────────────────────────────────────────
+
+if [ -z "$EXTERNAL_DIR" ]; then
+    exit 0
+fi
+
+INTERNAL_DIR="$(git rev-parse --show-toplevel)/internal"
+
+if git diff-tree --no-commit-id --name-only -r HEAD | grep -q '^internal/'; then
+    if [ ! -d "$EXTERNAL_DIR" ]; then
+        echo "⚠ post-commit: External directory not found: $EXTERNAL_DIR" >&2
+        echo "  Skipping sync. Check if the folder was renamed or moved." >&2
+        exit 0
+    fi
+
+    if ! rm -rf "$EXTERNAL_DIR"/*; then
+        echo "⚠ post-commit: Failed to clean external directory" >&2
+        exit 0
+    fi
+
+    if cp -a "$INTERNAL_DIR"/* "$EXTERNAL_DIR"/; then
+        echo "✔ Synced internal/ → external folder"
+    else
+        echo "⚠ post-commit: Failed to copy files to external directory" >&2
+        exit 0
+    fi
+fi
