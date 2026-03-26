@@ -27,6 +27,9 @@ The AI agent opens your project, reads `AGENTS.md`, finds `internal/INDEX.md`, a
 
 ## Install
 
+> [!WARNING]
+> Before the first sync, back up your external docs folder. If the two sides already drifted, the first sync may surface conflicts or deletions.
+
 The easiest way: point your AI coding agent at this repo and ask it to set it up.
 
 > Install second-brain-sync from https://github.com/danielandrino/second-brain-sync in my project. My external docs folder is /path/to/my/folder.
@@ -35,21 +38,23 @@ The AI will copy the hooks, set the path, and make them executable.
 
 ### Manual install
 
-1. Copy the hooks into your project:
+1. Back up your external docs folder.
+
+2. Copy the hooks into your project:
 
 ```bash
 cp hooks/pre-commit /path/to/your/project/.git/hooks/pre-commit
 cp hooks/post-commit /path/to/your/project/.git/hooks/post-commit
 ```
 
-2. Make them executable:
+3. Make them executable:
 
 ```bash
 chmod +x /path/to/your/project/.git/hooks/pre-commit
 chmod +x /path/to/your/project/.git/hooks/post-commit
 ```
 
-3. Set the path to your external folder (pick one):
+4. Set the path to your external folder (pick one):
 
 ```bash
 # Option A: environment variable (in ~/.zshrc or ~/.bashrc)
